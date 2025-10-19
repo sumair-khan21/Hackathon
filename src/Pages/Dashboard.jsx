@@ -46,13 +46,16 @@ const Dashboard = () => {
   
   // Saved Pitches
   const [savedPitches, setSavedPitches] = useState([]);
-  const [currentChatId, setCurrentChatId] = useState(null);
+  // const [currentChatId, setCurrentChatId] = useState(null);
   
   // UI State
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [copiedSection, setCopiedSection] = useState(null);
   
   // Edit State
+  const [currentChatId, setCurrentChatId] = useState(null);
+const [currentConversationId, setCurrentConversationId] = useState(null);
+const [conversationHistory, setConversationHistory] = useState([]);
   const [editMode, setEditMode] = useState({
     name: false,
     tagline: false,
@@ -60,6 +63,8 @@ const Dashboard = () => {
     audience: false,
   });
   const [editedData, setEditedData] = useState(null);
+  const [isFollowUp, setIsFollowUp] = useState(false);  
+
 
   // ========================================
   // INITIALIZATION
@@ -70,10 +75,22 @@ const Dashboard = () => {
       const parsedUser = JSON.parse(storedUser);
       setUser(parsedUser);
       fetchSavedPitches(parsedUser.id);
+      // Initialize or get existing conversation from localStorage
+const savedConvId = localStorage.getItem("currentConversationId");
+if (savedConvId) {
+  setCurrentConversationId(savedConvId);
+  fetchConversationHistory(savedConvId);
+} else {
+  const newConvId = `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  setCurrentConversationId(newConvId);
+  localStorage.setItem("currentConversationId", newConvId);
+}
     } else {
       navigate("/");
     }
   }, [navigate]);
+
+  
 
   // ========================================
   // FETCH SAVED PITCHES
@@ -93,23 +110,179 @@ const Dashboard = () => {
   };
 
   // ========================================
-  // GENERATE PITCH (GEMINI API)
-  // ========================================
-  const generatePitch = async () => {
-    if (!prompt.trim()) {
-      toast.error("Please enter an idea or prompt.");
-      return;
+// FETCH CONVERSATION HISTORY
+// ========================================
+const fetchConversationHistory = async (convId) => {
+  const { data, error } = await supabase
+    .from("pitch_conversations")
+    .select("*")
+    .eq("conversation_id", convId)
+    .eq("user_id", user?.id)
+    .order("created_at", { ascending: true });
+
+  if (!error) {
+    setConversationHistory(data || []);
+  }
+};
+
+// ========================================
+// VALIDATE USER PROMPT (Keyword Check)
+// ========================================
+const isValidStartupPrompt = (text) => {
+  const keywords = [
+    "startup", "app", "idea", "product", "business", 
+    "service", "platform", "tool", "solution", "feature",
+    "project", "venture", "enterprise", "saas", "web",
+    "mobile", "software", "build", "create", "develop",
+    "name", "tagline", "audience", "feature", "color", "logo",
+    "what is", "tell me", "describe", "explain", "show"
+  ];
+  
+  const lowerText = text.toLowerCase();
+  
+  const rejectedPatterns = [
+    /^who (is|are|was|were)/i,
+    /^what is the (capital|president|prime minister|population|weather|covid)/i,
+    /^when (is|are|was|were)/i,
+    /^where (is|are)/i,
+    /^how (many|much) (is|are|does)/i,
+  ];
+
+  const isRejected = rejectedPatterns.some(pattern => pattern.test(lowerText));
+  if (isRejected) return false;
+
+  if (responseData?.name) {
+    return true; 
+  }
+
+  const hasKeyword = keywords.some(keyword => lowerText.includes(keyword));
+  return hasKeyword || text.trim().length > 50;
+};
+
+// ========================================
+// BUILD CONTEXT FOR LLM (Previous Pitch)
+// ========================================
+const buildContextPrompt = (userPrompt) => {
+  const lowerPrompt = userPrompt.toLowerCase();
+  
+  let context = "";
+  
+  if (responseData?.name) {
+    // Detect karo user kya pooch raha hy
+    let questionType = "general";
+    
+    if (lowerPrompt.includes("name")) {
+      questionType = "name";
+    } else if (lowerPrompt.includes("tagline")) {
+      questionType = "tagline";
+    } else if (lowerPrompt.includes("pitch") || lowerPrompt.includes("elevator")) {
+      questionType = "pitch";
+    } else if (lowerPrompt.includes("audience")) {
+      questionType = "audience";
+    } else if (lowerPrompt.includes("feature")) {
+      questionType = "feature";
+    } else if (lowerPrompt.includes("color") || lowerPrompt.includes("brand")) {
+      questionType = "color";
+    } else if (lowerPrompt.includes("logo")) {
+      questionType = "logo";
     }
 
-    setLoading(true);
-    setResponseData(null);
-    setCurrentChatId(null);
+    context = `You are a helpful assistant. A startup pitch has been previously generated with these details:
 
-    try {
-      const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${API_KEY}`;
+Startup Name: ${responseData.name}
+Tagline: ${responseData.tagline}
+Pitch: ${responseData.pitch}
+Target Audience: ${responseData.audience}
+Brand Colors: ${responseData.colors.join(", ")}
+Logo Concept: ${responseData.logoIdea}
 
-      const fullPrompt = `
+User's Question: "${userPrompt}"
+Question Type: ${questionType}
+
+IMPORTANT INSTRUCTIONS:
+- Answer ONLY what the user is asking about
+- Do NOT repeat the entire pitch
+- Be concise and direct
+- If asking about "${questionType}", provide ONLY that information
+
+For example:
+- If asking "name" → Answer: "The startup name is [name]"
+- If asking "tagline" → Answer: "The tagline is [tagline]"
+- If asking "features" → Answer: "The key features are: [list features]"
+- Do NOT include other information unless specifically asked
+
+User Question: ${userPrompt}`;
+  } else {
+    context = userPrompt;
+  }
+  
+  return context;
+};
+  // ========================================
+  // GENERATE PITCH (GEMINI API)
+  // ========================================
+const generatePitch = async () => {
+  if (!prompt.trim()) {
+    toast.error("Please enter an idea or prompt.");
+    return;
+  }
+
+  // Validate prompt
+  if (!isValidStartupPrompt(prompt)) {
+    toast.error(
+      "Please ask startup-related questions. E.g., 'I want an app that connects students with mentors' or 'Tell me about the features of the last pitch'"
+    );
+    return;
+  }
+
+  setLoading(true);
+  setResponseData(null);
+
+  try {
+    const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${API_KEY}`;
+
+    // Build context with previous pitch
+    // const contextPrompt = buildContextPrompt(prompt);
+    
+    // Check if this is a follow-up question or new pitch request
+    const isFollowUp = responseData?.name && 
+      (prompt.toLowerCase().includes("name") || 
+       prompt.toLowerCase().includes("feature") ||
+       prompt.toLowerCase().includes("audience") ||
+       prompt.toLowerCase().includes("color") ||
+       prompt.toLowerCase().includes("logo"));
+
+    let fullPrompt = "";
+
+    if (isFollowUp) {
+  // Follow-up question - just answer from existing data
+  fullPrompt = `You are a helpful assistant. A startup pitch has been previously generated with these details:
+
+Startup Name: ${responseData.name}
+Tagline: ${responseData.tagline}
+Pitch: ${responseData.pitch}
+Target Audience: ${responseData.audience}
+Brand Colors: ${responseData.colors.join(", ")}
+Logo Concept: ${responseData.logoIdea}
+
+User Question: "${prompt}"
+
+ANSWER ONLY THE QUESTION ASKED. BE CONCISE.
+- Do NOT repeat the entire pitch
+- Do NOT include unrelated information
+- Answer directly and briefly
+
+Example answers:
+- "The tagline is: Bridging the Gap, Building Futures."
+- "The key features are: [list]"
+- "The brand colors are: [colors]"
+
+Now answer this question: ${prompt}`;
+
+    } else {
+      // New pitch request
+      fullPrompt = `
 You are a startup pitch assistant.
 Task: Generate a startup name, tagline, pitch, target audience, landing page content, brand colors, and logo concept.
 
@@ -147,62 +320,86 @@ Logo Concept: [description]
 Business Idea: ${prompt}
 Tone: ${tone}
 `;
-
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: fullPrompt }] }],
-        }),
-      });
-
-      const data = await res.json();
-      const text =
-        data?.candidates?.[0]?.content?.parts?.[0]?.text ||
-        "No response from Gemini model.";
-
-      const parsed = parsePitchResponse(text);
-      setResponseData(parsed);
-
-      // Save to Supabase
-      if (parsed && parsed.name && user?.id) {
-        const { data: insertedData, error } = await supabase
-          .from("pitches")
-          .insert([
-            {
-              user_id: user.id,
-              idea: prompt,
-              tone,
-              name: parsed.name,
-              tagline: parsed.tagline,
-              pitch: parsed.pitch,
-              audience: parsed.audience,
-              landing: parsed.landing,
-              colors: parsed.colors.join(","),
-              logo_idea: parsed.logoIdea,
-            },
-          ])
-          .select();
-
-        if (error) {
-          console.error("Error saving pitch:", error.message);
-        } else {
-          setCurrentChatId(insertedData[0].id);
-          fetchSavedPitches(user.id);
-          toast.success("Pitch generated and saved!");
-        }
-      }
-
-      // Clear input after successful generation
-      // setPrompt("");
-    } catch (error) {
-      console.error("Error calling Gemini:", error);
-      toast.error("Something went wrong. Please try again.");
-      setResponseData({ error: "Something went wrong. Please try again." });
-    } finally {
-      setLoading(false);
     }
-  };
+
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: fullPrompt }] }],
+      }),
+    });
+
+    const data = await res.json();
+    const text =
+      data?.candidates?.[0]?.content?.parts?.[0]?.text ||
+      "No response from Gemini model.";
+
+    const parsed = isFollowUp ? responseData : parsePitchResponse(text);
+    setResponseData(parsed);
+    setIsFollowUp(isFollowUp); 
+
+    // Save to conversation history
+    if (currentConversationId && user?.id) {
+      const { error: convError } = await supabase
+        .from("pitch_conversations")
+        .insert([
+          {
+            conversation_id: currentConversationId,
+            user_id: user.id,
+            pitch_id: currentChatId ? parseInt(currentChatId) : null,
+            message_type: isFollowUp ? "user_question" : "user_prompt",
+            user_message: prompt,
+            response_data: parsed,
+          },
+        ]);
+
+      if (convError) {
+        console.error("Error saving conversation:", convError.message);
+      }
+    }
+
+    // Save new pitch to database (only if it's a new pitch, not follow-up)
+    if (!isFollowUp && parsed && parsed.name && user?.id) {
+      const { data: insertedData, error } = await supabase
+        .from("pitches")
+        .insert([
+          {
+            user_id: user.id,
+            conversation_id: currentConversationId,
+            idea: prompt,
+            tone,
+            name: parsed.name,
+            tagline: parsed.tagline,
+            pitch: parsed.pitch,
+            audience: parsed.audience,
+            landing: parsed.landing,
+            colors: parsed.colors.join(","),
+            logo_idea: parsed.logoIdea,
+            is_latest_pitch: true,
+          },
+        ])
+        .select();
+
+      if (error) {
+        console.error("Error saving pitch:", error.message);
+      } else {
+        setCurrentChatId(insertedData[0].id);
+        fetchSavedPitches(user.id);
+        toast.success("Pitch generated and saved!");
+      }
+    } else if (isFollowUp && currentChatId) {
+      toast.success("Response generated!");
+    }
+  } catch (error) {
+    console.error("Error calling Gemini:", error);
+    toast.error("Something went wrong. Please try again.");
+    setResponseData({ error: "Something went wrong. Please try again." });
+  } finally {
+    setLoading(false);
+  }
+};
+
 
   // ========================================
   // PARSE GEMINI RESPONSE
@@ -308,7 +505,126 @@ Tone: ${tone}
 
     return sections;
   };
+// ========================================
+// GENERATE LANDING PAGE CODE
+// ========================================
+const generateLandingPageCode = () => {
+  const colors = responseData.colors || ["#06b6d4", "#14b8a6", "#3b82f6", "#8b5cf6", "#ec4899"];
+  const name = responseData.name || "Startup";
+  const sections = formatLandingPage(responseData.landing);
 
+  return `import React from 'react';
+import { ChevronRight, Check, Lightbulb, Target } from 'lucide-react';
+
+export default function LandingPage() {
+  const colors = {
+    primary: '${colors[0]}',
+    secondary: '${colors[1]}',
+    accent1: '${colors[2]}',
+    accent2: '${colors[3]}',
+    accent3: '${colors[4]}'
+  };
+
+  return (
+    <div className="w-full">
+      {/* Hero Section */}
+      <div 
+        className="text-white p-16 text-center relative overflow-hidden min-h-screen flex items-center justify-center"
+        style={{ background: \`linear-gradient(135deg, \${colors.primary}, \${colors.secondary})\` }}
+      >
+        <div className="relative z-10 max-w-4xl mx-auto">
+          <h1 className="text-6xl font-bold mb-6">${name}</h1>
+          <p className="text-2xl opacity-90 mb-8">${sections?.hero || 'Your compelling headline here'}</p>
+          <button 
+            className="px-10 py-4 rounded-full font-bold text-lg hover:scale-105 transition-transform shadow-xl text-gray-900"
+            style={{ backgroundColor: 'white' }}
+          >
+            ${sections?.cta || 'Get Started'}
+          </button>
+        </div>
+        <div className="absolute inset-0 opacity-10">
+          <div className="absolute top-10 left-10 w-40 h-40 bg-white rounded-full blur-3xl"></div>
+          <div className="absolute bottom-10 right-10 w-48 h-48 bg-white rounded-full blur-3xl"></div>
+        </div>
+      </div>
+
+      {/* Problem Section */}
+      <div className="p-16 bg-gray-50">
+        <div className="max-w-4xl mx-auto">
+          <div className="flex items-start gap-6">
+            <div 
+              className="w-16 h-16 rounded-full flex items-center justify-center flex-shrink-0"
+              style={{ backgroundColor: colors.accent2 + '20' }}
+            >
+              <Target className="w-8 h-8" style={{ color: colors.accent2 }} />
+            </div>
+            <div>
+              <h2 className="text-4xl font-bold text-gray-900 mb-4">The Problem</h2>
+              <p className="text-xl text-gray-700 leading-relaxed">${sections?.problem || 'Problem description'}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Solution Section */}
+      <div className="p-16 bg-white">
+        <div className="max-w-4xl mx-auto">
+          <div className="flex items-start gap-6">
+            <div 
+              className="w-16 h-16 rounded-full flex items-center justify-center flex-shrink-0"
+              style={{ backgroundColor: colors.accent1 + '20' }}
+            >
+              <Lightbulb className="w-8 h-8" style={{ color: colors.accent1 }} />
+            </div>
+            <div>
+              <h2 className="text-4xl font-bold text-gray-900 mb-4">Our Solution</h2>
+              <p className="text-xl text-gray-700 leading-relaxed">${sections?.solution || 'Solution description'}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Features Section */}
+      <div className="p-16 bg-gray-50">
+        <div className="max-w-6xl mx-auto">
+          <h2 className="text-4xl font-bold text-gray-900 mb-12 text-center">Key Features</h2>
+          <div className="grid md:grid-cols-3 gap-8">
+            ${
+              sections?.features?.map((feature, idx) => {
+                const color = colors[['primary', 'secondary', 'accent1', 'accent2', 'accent3'][idx % 5]];
+                return `<div key="${idx}" className="bg-white p-8 rounded-2xl shadow-lg hover:shadow-xl transition-all hover:-translate-y-1">
+              <div 
+                className="w-14 h-14 rounded-full flex items-center justify-center mb-6"
+                style={{ backgroundColor: '${color}' + '20' }}
+              >
+                <Check className="w-7 h-7" style={{ color: '${color}' }} />
+              </div>
+              <p className="text-gray-700 text-lg leading-relaxed">${feature}</p>
+            </div>`;
+              }).join('\n            ') || '<p>Features will appear here</p>'
+            }
+          </div>
+        </div>
+      </div>
+
+      {/* Final CTA Section */}
+      <div 
+        className="p-16 text-white text-center py-24"
+        style={{ background: \`linear-gradient(135deg, \${colors.accent3}, \${colors.accent2})\` }}
+      >
+        <h2 className="text-5xl font-bold mb-6">Ready to Get Started?</h2>
+        <p className="text-2xl mb-10 opacity-90 max-w-2xl mx-auto">${sections?.cta || 'Join thousands using our platform'}</p>
+        <button 
+          className="px-10 py-4 rounded-full font-bold text-lg hover:scale-105 transition-transform shadow-xl text-gray-900"
+          style={{ backgroundColor: 'white' }}
+        >
+          Sign Up Now
+        </button>
+      </div>
+    </div>
+  );
+}`;
+};
   // ========================================
   // COPY TO CLIPBOARD
   // ========================================
@@ -375,7 +691,7 @@ Tone: ${tone}
     doc.setTextColor(255, 255, 255);
     doc.setFontSize(20);
     doc.setFont("helvetica", "bold");
-    doc.text("🚀 PitchCraft", margin, 18);
+    doc.text("PitchCraft", margin, 18);
 
     yPos = 45;
 
@@ -473,7 +789,7 @@ Tone: ${tone}
         yPos += 5;
       }
 
-      addSection("🚀 Call to Action:", landingSections.cta);
+      addSection(" Call to Action:", landingSections.cta);
     }
 
     // Brand Colors
@@ -557,12 +873,20 @@ Tone: ${tone}
   // NEW CHAT
   // ========================================
   const handleNewChat = () => {
-    setPrompt("");
-    setResponseData(null);
-    setCurrentChatId(null);
-    setEditedData(null);
-    setEditMode({ name: false, tagline: false, pitch: false, audience: false });
-  };
+  // Create new conversation
+  const newConvId = `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  setCurrentConversationId(newConvId);
+  localStorage.setItem("currentConversationId", newConvId);
+  
+  setPrompt("");
+  setResponseData(null);
+  setCurrentChatId(null);
+  setConversationHistory([]);
+  setEditedData(null);
+  setEditMode({ name: false, tagline: false, pitch: false, audience: false });
+  
+  toast.success("New pitch conversation started!");
+};
 
   // ========================================
   // LOAD SAVED PITCH
@@ -806,9 +1130,41 @@ Generating your pitch...
 </div>
 </div>
 )}
+
+
         {/* Response Cards */}
         {responseData && !responseData.error && (
           <div className="space-y-4 animate-fade-in">
+          {/* Follow-up Response Display */}
+    {isFollowUp && responseData && (
+      <div className="bg-slate-800/50 border border-slate-700 rounded-2xl p-6 hover:border-cyan-500/50 transition-all animate-fade-in">
+        <div className="flex items-start gap-4">
+          <Lightbulb className="w-6 h-6 text-yellow-400 flex-shrink-0 mt-1" />
+          <div className="flex-1">
+            <p className="text-slate-400 text-sm mb-3">Response</p>
+            <p className="text-slate-300 leading-relaxed whitespace-pre-wrap">
+              {responseData.response || responseData.pitch}
+            </p>
+            <button
+              onClick={() => handleCopy(responseData.response || responseData.pitch, "response")}
+              className="mt-3 text-slate-400 hover:text-cyan-400 transition-colors p-2 hover:bg-slate-700/50 rounded-lg flex items-center gap-2 text-sm"
+            >
+              {copiedSection === "response" ? (
+                <>
+                  <Check className="w-5 h-5 text-green-400" />
+                  Copied
+                </>
+              ) : (
+                <>
+                  <Copy className="w-5 h-5" />
+                  Copy Response
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
             {/* Startup Name */}
             <div className="bg-slate-800/50 border border-slate-700 rounded-2xl p-6 hover:border-cyan-500/50 transition-all">
               <div className="flex items-start justify-between gap-4">
@@ -1138,6 +1494,52 @@ Generating your pitch...
     </button>
   </div>
 </div>
+
+
+{/* Landing Page Code */}
+{responseData?.landing && (
+  <div className="bg-slate-800/50 border border-slate-700 rounded-2xl p-6 hover:border-cyan-500/50 transition-all">
+    <div className="flex items-start justify-between gap-4 mb-4">
+      <div className="flex items-center gap-3">
+        <Globe className="w-6 h-6 text-indigo-400" />
+        <div>
+          <h4 className="text-xl font-semibold text-white">Landing Page Code</h4>
+          <p className="text-slate-400 text-sm mt-1">Copy the JSX code for your landing page</p>
+        </div>
+      </div>
+    </div>
+    
+    <div className="mb-4">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-slate-400 text-sm">React JSX Component</span>
+        <button
+          onClick={() => {
+            handleCopy(generateLandingPageCode(), "landingCode");
+          }}
+          className="text-slate-400 hover:text-cyan-400 transition-colors p-2 hover:bg-slate-700/50 rounded-lg flex items-center gap-2"
+        >
+          {copiedSection === "landingCode" ? (
+            <>
+              <Check className="w-5 h-5 text-green-400" />
+              <span className="text-sm text-green-400">Copied!</span>
+            </>
+          ) : (
+            <>
+              <Copy className="w-5 h-5" />
+              <span className="text-sm">Copy Code</span>
+            </>
+          )}
+        </button>
+      </div>
+      
+      <div className="bg-slate-900/50 border border-slate-700 rounded-lg p-4 overflow-x-auto max-h-96 overflow-y-auto">
+        <pre className="text-slate-300 text-sm font-mono whitespace-pre-wrap break-words">
+          {generateLandingPageCode()}
+        </pre>
+      </div>
+    </div>
+  </div>
+)}
 
             {/* Brand Colors */}
             {responseData.colors && responseData.colors.length > 0 && (
