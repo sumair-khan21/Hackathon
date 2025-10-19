@@ -54,7 +54,7 @@ const ForgotPassword = () => {
             PitchCraft
             <Sparkles className="w-5 h-5 text-cyan-400" />
           </h1>
-          <p className="text-slate-400 text-sm">Your AI Startup Partner 🚀</p>
+          <p className="text-slate-400 text-sm">Your AI Startup Partner </p>
         </div>
 
         {/* Main Card */}
