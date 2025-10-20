@@ -1,11 +1,11 @@
-# 🚀 Startup Pitch Generator
+#  Startup Pitch Generator
 
 A smart web app that helps startup founders and creators generate powerful **pitch ideas** using **AI (Gemini API)** and store them securely with **Supabase**.  
 Users can easily create, edit, regenerate, and save their startup pitch data — all from one clean dashboard.
 
 ---
 
-## 🧠 Features
+##  Features
 
 - ✍️ **AI Pitch Generation** – Generate complete startup pitches using Gemini AI.  
 - 💾 **Supabase Integration** – Store and fetch pitches directly from the Supabase database.  
@@ -16,7 +16,7 @@ Users can easily create, edit, regenerate, and save their startup pitch data —
 
 ---
 
-## 🛠️ Tech Stack
+##  Tech Stack
 
 | Technology | Purpose |
 |-------------|----------|
@@ -28,7 +28,7 @@ Users can easily create, edit, regenerate, and save their startup pitch data —
 
 ---
 
-## ⚙️ Installation & Setup
+##  Installation & Setup
 
 1. **Clone this repository**
    ```bash
