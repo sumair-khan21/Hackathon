@@ -1,16 +1,36 @@
-# React + Vite
+#  Startup Pitch Generator
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A smart web app that helps startup founders and creators generate powerful **pitch ideas** using **AI (Gemini API)** and store them securely with **Supabase**.  
+Users can easily create, edit, regenerate, and save their startup pitch data — all from one clean dashboard.
 
-Currently, two official plugins are available:
+---
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+##  Features
 
-## React Compiler
+- ✍️ **AI Pitch Generation** – Generate complete startup pitches using Gemini AI.  
+- 💾 **Supabase Integration** – Store and fetch pitches directly from the Supabase database.  
+- 🔁 **Regenerate Option** – Improve your idea by regenerating better versions instantly.  
+- 📝 **Editable Fields** – Edit pitch name, tagline, and idea in real-time.  
+- 💡 **User Dashboard** – View and manage all your saved pitches in one place.  
+- 🎨 **Modern UI** – Clean, minimal, and user-friendly interface built with React.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+---
 
-## Expanding the ESLint configuration
+##  Tech Stack
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+| Technology | Purpose |
+|-------------|----------|
+| **React.js** | Frontend Framework |
+| **Supabase** | Backend & Database |
+| **Gemini API** | AI Content Generation |
+| **Tailwind CSS** | Styling |
+| **Vite** | Build Tool |
+
+---
+
+##  Installation & Setup
+
+1. **Clone this repository**
+   ```bash
+   git clone https://github.com/yourusername/startup-pitch-generator.git
+   cd startup-pitch-generator
