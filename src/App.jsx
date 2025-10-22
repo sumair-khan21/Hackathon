@@ -6,6 +6,7 @@ import Signup from './Pages/Signup'
 import ForgotPassword from './Pages/ForgotPassword'
 import UpdatePassword from './Pages/UpdatePassword'
 import { Toaster } from 'react-hot-toast'
+import SharedPitch from './Pages/SharedPitch'
 
 const App = () => {
   
@@ -17,6 +18,8 @@ const App = () => {
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/update-password" element={<UpdatePassword />} />
         <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/pitch/:id" element={<SharedPitch />} />
+
       </Routes>
     
       <Toaster position="top-center" reverseOrder={false} />

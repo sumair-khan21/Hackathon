@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { useNavigate } from "react-router-dom";
 import { jsPDF } from "jspdf";
+import html2canvas from "html2canvas";
 import {
   Rocket,
   Sparkles,
@@ -64,31 +65,164 @@ const [conversationHistory, setConversationHistory] = useState([]);
   });
   const [editedData, setEditedData] = useState(null);
   const [isFollowUp, setIsFollowUp] = useState(false);  
+  const [logoGenerating, setLogoGenerating] = useState(false);
+  const [generatedLogoUrl, setGeneratedLogoUrl] = useState(null);
 
+
+
+
+  // ========================================
+// GENERATE LOGO (REVE API + SUPABASE STORAGE)
+// ========================================
+const generateLogo = async () => {
+  if (!responseData?.logoIdea) {
+    toast.error("Logo concept not found. Generate a pitch first.");
+    return;
+  }
+
+  if (!responseData?.name) {
+    toast.error("Startup name not found. Please generate a pitch first.");
+    return;
+  }
+
+  setLogoGenerating(true);
+
+  try {
+    const API_URL = "https://api.reve.com/v1/image/create";
+    const API_KEY = import.meta.env.VITE_REVE_API_KEY;
+
+    // Step 1: Generate logo from Reve API
+    const res = await fetch(API_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${API_KEY}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        prompt: `Professional startup logo: ${responseData.logoIdea}. Modern, clean, minimalist design for ${responseData.name}`,
+        aspect_ratio: "1:1",
+        version: "latest",
+      }),
+    });
+
+    if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
+
+    const data = await res.json();
+
+    if (data.image) {
+      const base64Image = `data:image/png;base64,${data.image}`;
+      
+      // Step 2: Upload to Supabase Storage
+      toast.loading("Uploading logo to cloud storage...");
+      const publicUrl = await uploadLogoToSupabase(
+        base64Image, 
+        responseData.name
+      );
+
+      // Step 3: Update state with public URL
+      setGeneratedLogoUrl(publicUrl);
+      toast.dismiss();
+      toast.success("Logo generated and saved successfully!");
+
+      // Step 4: Save URL to database
+      if (currentChatId) {
+        const { error: updateError } = await supabase
+          .from("pitches")
+          .update({ generated_logo_url: publicUrl })
+          .eq("id", currentChatId);
+
+        if (updateError) {
+          console.error("Error updating logo URL:", updateError);
+        } else {
+          fetchSavedPitches(user.id); // Refresh saved pitches
+        }
+      }
+    } else {
+      throw new Error("Image not found in API response");
+    }
+  } catch (error) {
+    console.error("Logo generation error:", error);
+    toast.dismiss();
+    toast.error(`Failed to generate logo: ${error.message}`);
+  } finally {
+    setLogoGenerating(false);
+  }
+};
+
+// ========================================
+// DOWNLOAD LOGO
+// ========================================
+const handleDownloadLogo = async () => {
+  if (!generatedLogoUrl) {
+    toast.error("No logo to download");
+    return;
+  }
+
+  try {
+    toast.loading("Downloading logo...");
+    
+    // Fetch image from URL
+    const response = await fetch(generatedLogoUrl);
+    const blob = await response.blob();
+    
+    // Create download link
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${responseData.name.replace(/[^a-zA-Z0-9]/g, '-')}-logo.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+    
+    toast.dismiss();
+    toast.success("Logo downloaded successfully!");
+  } catch (error) {
+    console.error("Download error:", error);
+    toast.dismiss();
+    toast.error("Failed to download logo");
+  }
+};
 
   // ========================================
   // INITIALIZATION
   // ========================================
   useEffect(() => {
-    const storedUser = localStorage.getItem("user");
-    if (storedUser) {
-      const parsedUser = JSON.parse(storedUser);
-      setUser(parsedUser);
-      fetchSavedPitches(parsedUser.id);
-      // Initialize or get existing conversation from localStorage
-const savedConvId = localStorage.getItem("currentConversationId");
-if (savedConvId) {
-  setCurrentConversationId(savedConvId);
-  fetchConversationHistory(savedConvId);
-} else {
-  const newConvId = `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  setCurrentConversationId(newConvId);
-  localStorage.setItem("currentConversationId", newConvId);
-}
+  const checkAuth = async () => {
+    // Check Supabase session first
+    const { data: { session } } = await supabase.auth.getSession()
+    
+    if (session?.user) {
+      setUser(session.user)
+      localStorage.setItem("user", JSON.stringify(session.user))
+      fetchSavedPitches(session.user.id)
+      
+      // Initialize conversation
+      const savedConvId = localStorage.getItem("currentConversationId")
+      if (savedConvId) {
+        setCurrentConversationId(savedConvId)
+        fetchConversationHistory(savedConvId)
+      } else {
+        const newConvId = `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+        setCurrentConversationId(newConvId)
+        localStorage.setItem("currentConversationId", newConvId)
+      }
     } else {
-      navigate("/");
+      // Fallback to localStorage
+      const storedUser = localStorage.getItem("user")
+      if (storedUser) {
+        const parsedUser = JSON.parse(storedUser)
+        setUser(parsedUser)
+        fetchSavedPitches(parsedUser.id)
+      } else {
+        navigate("/")
+      }
     }
-  }, [navigate]);
+  }
+  
+  checkAuth()
+}, [navigate])
 
   
 
@@ -126,37 +260,73 @@ const fetchConversationHistory = async (convId) => {
 };
 
 // ========================================
-// VALIDATE USER PROMPT (Keyword Check)
+// VALIDATE USER PROMPT (Improved Logic)
 // ========================================
 const isValidStartupPrompt = (text) => {
-  const keywords = [
-    "startup", "app", "idea", "product", "business", 
-    "service", "platform", "tool", "solution", "feature",
-    "project", "venture", "enterprise", "saas", "web",
-    "mobile", "software", "build", "create", "develop",
-    "name", "tagline", "audience", "feature", "color", "logo",
-    "what is", "tell me", "describe", "explain", "show"
-  ];
+  const lowerText = text.toLowerCase().trim();
   
-  const lowerText = text.toLowerCase();
+  // Agar text hi empty hai
+  if (!lowerText) return false;
   
+  // Agar pehle se pitch generate ho chuki hai, allow all questions
+  if (responseData?.name) {
+    return true; 
+  }
+
+  // Strict rejection patterns (only for obvious non-startup queries)
   const rejectedPatterns = [
-    /^who (is|are|was|were)/i,
-    /^what is the (capital|president|prime minister|population|weather|covid)/i,
-    /^when (is|are|was|were)/i,
-    /^where (is|are)/i,
-    /^how (many|much) (is|are|does)/i,
+    /^who is (donald trump|elon musk|bill gates|mark zuckerberg)/i,
+    /^what is the capital of/i,
+    /^who won (the|an?) (election|world cup|war)/i,
+    /^what is (covid|coronavirus|weather)/i,
+    /^when (was|is) (christmas|ramadan|diwali)/i,
+    /^where is (pakistan|india|usa|uk)/i,
+    /^how tall is/i,
+    /^tell me a joke/i,
+    /^what's (the time|today's date)/i,
   ];
 
   const isRejected = rejectedPatterns.some(pattern => pattern.test(lowerText));
   if (isRejected) return false;
 
-  if (responseData?.name) {
-    return true; 
-  }
+  // Startup-related keywords (expanded list)
+  const startupKeywords = [
+    // Core startup terms
+    "startup", "app", "application", "idea", "product", "business",
+    "service", "platform", "tool", "solution", "feature", "features",
+    "project", "venture", "enterprise", "saas", "software",
+    
+    // Action words
+    "build", "create", "develop", "make", "design", "launch",
+    "connect", "help", "solve", "improve", "optimize",
+    
+    // Target audience
+    "students", "teachers", "developers", "users", "customers",
+    "freelancers", "entrepreneurs", "businesses", "companies",
+    
+    // Technology
+    "web", "mobile", "ai", "machine learning", "blockchain",
+    "cloud", "api", "database", "website", "automation",
+    
+    // Pitch-related
+    "name", "tagline", "pitch", "audience", "color", "logo",
+    "brand", "marketing", "landing page",
+    
+    // Question starters
+    "i want", "i need", "can you", "help me", "generate",
+    "create me", "build me", "suggest", "recommend"
+  ];
 
-  const hasKeyword = keywords.some(keyword => lowerText.includes(keyword));
-  return hasKeyword || text.trim().length > 50;
+  // Check if any keyword matches
+  const hasKeyword = startupKeywords.some(keyword => 
+    lowerText.includes(keyword)
+  );
+
+  // Allow long descriptive prompts (user is describing their idea)
+  const isLongDescription = text.trim().length > 40;
+
+  // Allow if has keyword OR is detailed description
+  return hasKeyword || isLongDescription;
 };
 
 // ========================================
@@ -227,13 +397,15 @@ const generatePitch = async () => {
     return;
   }
 
-  // Validate prompt
   if (!isValidStartupPrompt(prompt)) {
-    toast.error(
-      "Please ask startup-related questions. E.g., 'I want an app that connects students with mentors' or 'Tell me about the features of the last pitch'"
-    );
-    return;
-  }
+  toast.error(
+    responseData?.name 
+      ? "Please ask about your pitch or describe a new startup idea"
+      : "Please describe your startup idea. E.g., 'An app that connects students with mentors' or 'A food delivery service for healthy meals'",
+    { duration: 4000 }
+  );
+  return;
+}
 
   setLoading(true);
   setResponseData(null);
@@ -669,15 +841,18 @@ export default function LandingPage() {
     setEditedData({ ...editedData, [field]: value });
   };
 
-  // ========================================
-  // EXPORT PDF
-  // ========================================
-  const handleExportPDF = () => {
-    if (!responseData) {
-      toast.error("No content to export.");
-      return;
-    }
+// ========================================
+// EXPORT PDF WITH LANDING PAGE PREVIEW
+// ========================================
+const handleExportPDF = async () => {
+  if (!responseData) {
+    toast.error("No content to export.");
+    return;
+  }
 
+  toast.loading("Generating PDF...");
+
+  try {
     const doc = new jsPDF();
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
@@ -685,7 +860,7 @@ export default function LandingPage() {
     const maxWidth = pageWidth - 2 * margin;
     let yPos = 20;
 
-    // Header with brand colors
+    // ========== HEADER ==========
     doc.setFillColor(6, 182, 212);
     doc.rect(0, 0, pageWidth, 30, "F");
     doc.setTextColor(255, 255, 255);
@@ -695,7 +870,7 @@ export default function LandingPage() {
 
     yPos = 45;
 
-    // Startup Name
+    // ========== STARTUP NAME ==========
     doc.setTextColor(0, 0, 0);
     doc.setFontSize(22);
     doc.setFont("helvetica", "bold");
@@ -703,7 +878,7 @@ export default function LandingPage() {
     doc.text(nameLines, margin, yPos);
     yPos += nameLines.length * 10 + 5;
 
-    // Tagline
+    // ========== TAGLINE ==========
     doc.setFontSize(14);
     doc.setFont("helvetica", "italic");
     doc.setTextColor(100, 100, 100);
@@ -711,11 +886,11 @@ export default function LandingPage() {
     doc.text(taglineLines, margin, yPos);
     yPos += taglineLines.length * 7 + 15;
 
-    // Pitch
+    // ========== ELEVATOR PITCH ==========
     doc.setFontSize(12);
     doc.setFont("helvetica", "bold");
     doc.setTextColor(6, 182, 212);
-    doc.text("📝 Elevator Pitch", margin, yPos);
+    doc.text("Elevator Pitch", margin, yPos);
     yPos += 8;
     doc.setFont("helvetica", "normal");
     doc.setTextColor(0, 0, 0);
@@ -723,14 +898,14 @@ export default function LandingPage() {
     doc.text(pitchLines, margin, yPos);
     yPos += pitchLines.length * 6 + 12;
 
-    // Target Audience
+    // ========== TARGET AUDIENCE ==========
     if (yPos > pageHeight - 60) {
       doc.addPage();
       yPos = 20;
     }
     doc.setFont("helvetica", "bold");
     doc.setTextColor(6, 182, 212);
-    doc.text("🎯 Target Audience", margin, yPos);
+    doc.text("Target Audience", margin, yPos);
     yPos += 8;
     doc.setFont("helvetica", "normal");
     doc.setTextColor(0, 0, 0);
@@ -738,77 +913,143 @@ export default function LandingPage() {
     doc.text(audienceLines, margin, yPos);
     yPos += audienceLines.length * 6 + 12;
 
-    // Landing Page Content
-    if (yPos > pageHeight - 80) {
+    // ========== LANDING PAGE PREVIEW ==========
+    if (responseData.landing) {
+      // Add new page for landing page
       doc.addPage();
       yPos = 20;
-    }
-    doc.setFont("helvetica", "bold");
-    doc.setTextColor(6, 182, 212);
-    doc.text("🌐 Landing Page Content", margin, yPos);
-    yPos += 10;
 
-    const landingSections = formatLandingPage(responseData.landing);
-    if (landingSections) {
-      const addSection = (title, content) => {
-        if (!content) return;
-        if (yPos > pageHeight - 40) {
-          doc.addPage();
-          yPos = 20;
-        }
-        doc.setFontSize(11);
-        doc.setFont("helvetica", "bold");
-        doc.setTextColor(0, 0, 0);
-        doc.text(title, margin + 5, yPos);
-        yPos += 6;
-        doc.setFont("helvetica", "normal");
-        doc.setFontSize(10);
-        const lines = doc.splitTextToSize(content, maxWidth - 10);
-        doc.text(lines, margin + 5, yPos);
-        yPos += lines.length * 5 + 8;
-      };
-
-      addSection("✨ Hero Section:", landingSections.hero);
-      addSection("📌 Problem Statement:", landingSections.problem);
-      addSection("💡 Solution:", landingSections.solution);
-
-      if (landingSections.features.length > 0) {
-        if (yPos > pageHeight - 40) {
-          doc.addPage();
-          yPos = 20;
-        }
-        doc.setFont("helvetica", "bold");
-        doc.text("🎯 Key Features:", margin + 5, yPos);
-        yPos += 6;
-        doc.setFont("helvetica", "normal");
-        landingSections.features.forEach((feature) => {
-          const featureLines = doc.splitTextToSize("• " + feature, maxWidth - 15);
-          doc.text(featureLines, margin + 10, yPos);
-          yPos += featureLines.length * 5 + 3;
-        });
-        yPos += 5;
-      }
-
-      addSection(" Call to Action:", landingSections.cta);
-    }
-
-    // Brand Colors
-    if (responseData.colors && responseData.colors.length > 0) {
-      if (yPos > pageHeight - 40) {
-        doc.addPage();
-        yPos = 20;
-      }
       doc.setFont("helvetica", "bold");
       doc.setTextColor(6, 182, 212);
-      doc.text("🎨 Brand Colors", margin, yPos);
-      yPos += 8;
-      doc.setFont("helvetica", "normal");
-      doc.setTextColor(0, 0, 0);
-      doc.text(responseData.colors.join(", "), margin + 5, yPos);
-      yPos += 12;
+      doc.setFontSize(16);
+      doc.text("Landing Page Preview", margin, yPos);
+      yPos += 15;
+
+      // Create temporary container for landing page
+      const tempContainer = document.createElement("div");
+      tempContainer.style.position = "absolute";
+      tempContainer.style.left = "-9999px";
+      tempContainer.style.width = "1200px";
+      tempContainer.style.background = "white";
+      document.body.appendChild(tempContainer);
+
+      const sections = formatLandingPage(responseData.landing);
+      const colors = responseData.colors || ["#06b6d4", "#14b8a6", "#3b82f6", "#8b5cf6", "#ec4899"];
+
+      // Generate landing page HTML
+      tempContainer.innerHTML = `
+        <div style="width: 1200px; background: white; font-family: Arial, sans-serif;">
+          <!-- Hero Section -->
+          <div style="background: linear-gradient(135deg, ${colors[0]}, ${colors[1]}); color: white; padding: 60px; text-align: center;">
+            <h1 style="font-size: 48px; font-weight: bold; margin-bottom: 20px;">${responseData.name}</h1>
+            <p style="font-size: 20px; margin-bottom: 30px; opacity: 0.9;">${sections?.hero || ''}</p>
+            <button style="background: white; color: ${colors[0]}; padding: 15px 40px; border-radius: 25px; border: none; font-weight: bold; font-size: 16px;">
+              ${sections?.cta || 'Get Started'}
+            </button>
+          </div>
+
+          <!-- Problem Section -->
+          <div style="padding: 50px; background: #f9fafb;">
+            <h2 style="font-size: 32px; font-weight: bold; color: #111; margin-bottom: 15px;">The Problem</h2>
+            <p style="font-size: 18px; color: #374151; line-height: 1.6;">${sections?.problem || ''}</p>
+          </div>
+
+          <!-- Solution Section -->
+          <div style="padding: 50px; background: white;">
+            <h2 style="font-size: 32px; font-weight: bold; color: #111; margin-bottom: 15px;">Our Solution</h2>
+            <p style="font-size: 18px; color: #374151; line-height: 1.6;">${sections?.solution || ''}</p>
+          </div>
+
+          <!-- Features Section -->
+          <div style="padding: 50px; background: #f9fafb;">
+            <h2 style="font-size: 32px; font-weight: bold; color: #111; margin-bottom: 30px; text-align: center;">Key Features</h2>
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;">
+              ${sections?.features?.map((feature, idx) => `
+                <div style="background: white; padding: 25px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                  <div style="width: 50px; height: 50px; border-radius: 50%; background: ${colors[idx % colors.length]}20; display: flex; align-items: center; justify-content: center; margin-bottom: 15px;">
+                    <span style="color: ${colors[idx % colors.length]}; font-size: 24px;">✓</span>
+                  </div>
+                  <p style="font-size: 16px; color: #374151; line-height: 1.5;">${feature}</p>
+                </div>
+              `).join('') || ''}
+            </div>
+          </div>
+
+          <!-- CTA Section -->
+          <div style="background: linear-gradient(135deg, ${colors[3]}, ${colors[4]}); color: white; padding: 60px; text-align: center;">
+            <h2 style="font-size: 40px; font-weight: bold; margin-bottom: 20px;">Ready to Get Started?</h2>
+            <p style="font-size: 20px; margin-bottom: 30px; opacity: 0.9;">${sections?.cta || ''}</p>
+            <button style="background: white; color: ${colors[3]}; padding: 15px 40px; border-radius: 25px; border: none; font-weight: bold; font-size: 16px;">
+              Sign Up Now
+            </button>
+          </div>
+        </div>
+      `;
+
+      // Capture as image
+      const canvas = await html2canvas(tempContainer, {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#ffffff'
+      });
+
+      document.body.removeChild(tempContainer);
+
+      // Add to PDF (multiple pages if needed)
+      const imgData = canvas.toDataURL("image/png");
+      const imgWidth = pageWidth - 2 * margin;
+      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      const maxPageHeight = pageHeight - 40;
+
+      let heightLeft = imgHeight;
+      let position = yPos;
+
+      doc.addImage(imgData, "PNG", margin, position, imgWidth, imgHeight);
+      heightLeft -= maxPageHeight;
+
+      // Add extra pages if image is too tall
+      while (heightLeft > 0) {
+        doc.addPage();
+        position = heightLeft - imgHeight + 20;
+        doc.addImage(imgData, "PNG", margin, position, imgWidth, imgHeight);
+        heightLeft -= maxPageHeight;
+      }
     }
 
-    // Logo Concept
+    // ========== BRAND COLORS (New Page) ==========
+    doc.addPage();
+    yPos = 20;
+
+    if (responseData.colors && responseData.colors.length > 0) {
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(6, 182, 212);
+      doc.setFontSize(14);
+      doc.text("Brand Colors", margin, yPos);
+      yPos += 10;
+
+      // Draw color swatches
+      responseData.colors.forEach((color, idx) => {
+        const x = margin + (idx * 35);
+        const hexToRgb = (hex) => {
+          const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+          return result ? {
+            r: parseInt(result[1], 16),
+            g: parseInt(result[2], 16),
+            b: parseInt(result[3], 16)
+          } : { r: 0, g: 0, b: 0 };
+        };
+        const rgb = hexToRgb(color);
+        doc.setFillColor(rgb.r, rgb.g, rgb.b);
+        doc.rect(x, yPos, 25, 25, "F");
+        doc.setFontSize(8);
+        doc.setTextColor(0, 0, 0);
+        doc.text(color, x, yPos + 32);
+      });
+      yPos += 40;
+    }
+
+    // ========== LOGO CONCEPT ==========
     if (responseData.logoIdea) {
       if (yPos > pageHeight - 40) {
         doc.addPage();
@@ -816,28 +1057,79 @@ export default function LandingPage() {
       }
       doc.setFont("helvetica", "bold");
       doc.setTextColor(6, 182, 212);
-      doc.text("🎯 Logo Concept", margin, yPos);
+      doc.setFontSize(14);
+      doc.text("Logo Concept", margin, yPos);
       yPos += 8;
       doc.setFont("helvetica", "normal");
       doc.setTextColor(0, 0, 0);
+      doc.setFontSize(11);
       const logoLines = doc.splitTextToSize(responseData.logoIdea, maxWidth - 10);
-      doc.text(logoLines, margin + 5, yPos);
+      doc.text(logoLines, margin, yPos);
+      yPos += logoLines.length * 6 + 15;
+
+      // Add generated logo if exists
+      if (generatedLogoUrl) {
+        if (yPos > pageHeight - 100) {
+          doc.addPage();
+          yPos = 20;
+        }
+        doc.setFont("helvetica", "bold");
+        doc.setTextColor(6, 182, 212);
+        doc.text("Generated Logo", margin, yPos);
+        yPos += 10;
+
+        try {
+          const logoImg = await loadImageAsBase64(generatedLogoUrl);
+          const logoSize = 60;
+          doc.addImage(logoImg, "PNG", margin, yPos, logoSize, logoSize);
+        } catch (err) {
+          console.error("Error adding logo to PDF:", err);
+        }
+      }
     }
 
-    // Footer
-    doc.setFontSize(8);
-    doc.setTextColor(150, 150, 150);
-    doc.text(
-      `Generated by PitchCraft • ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`,
-      pageWidth / 2,
-      pageHeight - 10,
-      { align: "center" }
-    );
+    // ========== FOOTER ==========
+    const totalPages = doc.internal.pages.length - 1;
+    for (let i = 1; i <= totalPages; i++) {
+      doc.setPage(i);
+      doc.setFontSize(8);
+      doc.setTextColor(150, 150, 150);
+      doc.text(
+        `Generated by PitchCraft • ${new Date().toLocaleDateString()} • Page ${i} of ${totalPages}`,
+        pageWidth / 2,
+        pageHeight - 10,
+        { align: "center" }
+      );
+    }
 
     doc.save(`PitchCraft-${responseData.name || "Pitch"}.pdf`);
+    toast.dismiss();
     toast.success("PDF downloaded successfully!");
-  };
 
+  } catch (error) {
+    console.error("PDF generation error:", error);
+    toast.dismiss();
+    toast.error("Failed to generate PDF");
+  }
+};
+
+// Helper function to load image as base64
+const loadImageAsBase64 = (url) => {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      resolve(canvas.toDataURL("image/png"));
+    };
+    img.onerror = reject;
+    img.src = url;
+  });
+};
   // ========================================
   // SHARE LINK
   // ========================================
@@ -872,8 +1164,7 @@ export default function LandingPage() {
   // ========================================
   // NEW CHAT
   // ========================================
-  const handleNewChat = () => {
-  // Create new conversation
+const handleNewChat = () => {
   const newConvId = `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   setCurrentConversationId(newConvId);
   localStorage.setItem("currentConversationId", newConvId);
@@ -884,26 +1175,33 @@ export default function LandingPage() {
   setConversationHistory([]);
   setEditedData(null);
   setEditMode({ name: false, tagline: false, pitch: false, audience: false });
+  setGeneratedLogoUrl(null); // Reset logo
   
   toast.success("New pitch conversation started!");
 };
-
   // ========================================
   // LOAD SAVED PITCH
   // ========================================
   const loadPitch = (pitch) => {
-    setResponseData({
-      name: pitch.name,
-      tagline: pitch.tagline,
-      pitch: pitch.pitch,
-      audience: pitch.audience,
-      landing: pitch.landing,
-      colors: pitch.colors ? pitch.colors.split(",") : [],
-      logoIdea: pitch.logo_idea || "",
-    });
-    setCurrentChatId(pitch.id);
-    setPrompt(pitch.idea);
-  };
+  setResponseData({
+    name: pitch.name,
+    tagline: pitch.tagline,
+    pitch: pitch.pitch,
+    audience: pitch.audience,
+    landing: pitch.landing,
+    colors: pitch.colors ? pitch.colors.split(",") : [],
+    logoIdea: pitch.logo_idea || "",
+  });
+  setCurrentChatId(pitch.id);
+  setPrompt(pitch.idea);
+  
+  // Load generated logo if exists
+  if (pitch.generated_logo_url) {
+    setGeneratedLogoUrl(pitch.generated_logo_url);
+  } else {
+    setGeneratedLogoUrl(null);
+  }
+};
 
   // ========================================
   // LOGOUT
@@ -914,6 +1212,52 @@ export default function LandingPage() {
     navigate("/");
   };
 
+
+    // ========================================
+// UPLOAD IMAGE TO SUPABASE STORAGE
+// ========================================
+const uploadLogoToSupabase = async (base64Image, logoName) => {
+  try {
+    // Convert base64 to blob
+    const base64Data = base64Image.split(',')[1];
+    const byteCharacters = atob(base64Data);
+    const byteNumbers = new Array(byteCharacters.length);
+    
+    for (let i = 0; i < byteCharacters.length; i++) {
+      byteNumbers[i] = byteCharacters.charCodeAt(i);
+    }
+    
+    const byteArray = new Uint8Array(byteNumbers);
+    const blob = new Blob([byteArray], { type: 'image/png' });
+
+    // Create unique filename
+    const timestamp = Date.now();
+    const fileName = `${logoName.replace(/[^a-zA-Z0-9]/g, '-')}-${timestamp}.png`;
+    const filePath = `logos/${user.id}/${fileName}`;
+
+    // Upload to Supabase Storage
+    const { data, error } = await supabase.storage
+      .from('hackathon-images')
+      .upload(filePath, blob, {
+        contentType: 'image/png',
+        upsert: false
+      });
+
+    if (error) throw error;
+
+    // Get public URL
+    const { data: urlData } = supabase.storage
+      .from('hackathon-images')
+      .getPublicUrl(filePath);
+
+    return urlData.publicUrl;
+  } catch (error) {
+    console.error('Error uploading to Supabase:', error);
+    throw error;
+  }
+};
+
+
   // ========================================
   // RENDER
   // ========================================
@@ -921,10 +1265,10 @@ export default function LandingPage() {
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 flex overflow-hidden">
       {/* ============== SIDEBAR ============== */}
       <div
-        className={`${
-          sidebarOpen ? "w-72" : "w-0"
-        } bg-slate-900/80 backdrop-blur-xl border-r border-slate-800 transition-all duration-300 overflow-hidden flex flex-col h-screen`}
-      >
+  className={`${
+    sidebarOpen ? "w-72" : "w-0"
+  } bg-slate-900/80 backdrop-blur-xl border-r border-slate-800 transition-all duration-300 overflow-hidden flex flex-col h-screen fixed lg:relative left-0 top-0 z-50 lg:z-auto`}
+>
         {/* Sidebar Header */}
         <div className="p-4 border-b border-slate-800 flex-shrink-0">
           <div className="flex items-center justify-between mb-4">
@@ -935,17 +1279,23 @@ export default function LandingPage() {
               <span className="text-white font-semibold">PitchCraft</span>
             </div>
             <button
-              onClick={() => setSidebarOpen(false)}
-              className="lg:hidden text-slate-400 hover:text-white"
-            >
-              <X className="w-5 h-5" />
-            </button>
+  onClick={() => setSidebarOpen(false)}
+  className="lg:hidden text-slate-400 hover:text-white active:text-cyan-400 transition-colors p-2 -m-2 touch-manipulation"
+>
+  <X className="w-5 h-5" />
+</button>
           </div>
 
           <button
-            onClick={handleNewChat}
-            className="w-full bg-gradient-to-r from-cyan-500 to-teal-500 text-white py-2.5 rounded-lg font-medium hover:shadow-lg hover:shadow-cyan-500/30 transition-all flex items-center justify-center gap-2"
-          >
+  onClick={() => {
+    handleNewChat();
+    // Mobile pe sidebar close kardo
+    if (window.innerWidth < 1024) {
+      setSidebarOpen(false);
+    }
+  }}
+  className="w-full bg-gradient-to-r from-cyan-500 to-teal-500 text-white py-2.5 rounded-lg font-medium hover:shadow-lg hover:shadow-cyan-500/30 active:scale-95 transition-all flex items-center justify-center gap-2 touch-manipulation"
+>
             <Plus className="w-5 h-5" />
             New Pitch
           </button>
@@ -965,43 +1315,49 @@ export default function LandingPage() {
           ) : (
             <div className="space-y-2">
               {savedPitches.map((pitch) => (
-                <div
-                  key={pitch.id}
-                  className={`group relative p-3 rounded-lg cursor-pointer transition-all ${
-                    currentChatId === pitch.id
-                      ? "bg-slate-800 border border-cyan-500/50"
-                      : "bg-slate-800/30 hover:bg-slate-800/50 border border-transparent"
-                  }`}
-                  onClick={() => loadPitch(pitch)}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex-1 min-w-0">
-                      <p className="text-white font-medium text-sm truncate">
-                        {pitch.name || "Untitled"}
-                      </p>
-                      <p className="text-slate-400 text-xs truncate mt-1">
-                        {pitch.tagline}
-                      </p>
-                      <p className="text-slate-500 text-xs mt-2">
-                        {new Date(pitch.created_at).toLocaleDateString()} •{" "}
-                        {new Date(pitch.created_at).toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </p>
-                    </div>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeletePitch(pitch.id);
-                      }}
-                      className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-300 transition-opacity"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-              ))}
+  <div
+    key={pitch.id}
+    className={`group relative p-3 rounded-lg cursor-pointer transition-all ${
+      currentChatId === pitch.id
+        ? "bg-slate-800 border border-cyan-500/50"
+        : "bg-slate-800/30 hover:bg-slate-800/50 border border-transparent active:bg-slate-800/70"
+    }`}
+    onClick={() => {
+      loadPitch(pitch);
+      // Mobile pe sidebar close kardo after selection
+      if (window.innerWidth < 1024) {
+        setSidebarOpen(false);
+      }
+    }}
+  >
+    <div className="flex items-start justify-between gap-2">
+      <div className="flex-1 min-w-0 pointer-events-none">
+        <p className="text-white font-medium text-sm truncate">
+          {pitch.name || "Untitled"}
+        </p>
+        <p className="text-slate-400 text-xs truncate mt-1">
+          {pitch.tagline}
+        </p>
+        <p className="text-slate-500 text-xs mt-2">
+          {new Date(pitch.created_at).toLocaleDateString()} •{" "}
+          {new Date(pitch.created_at).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          })}
+        </p>
+      </div>
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          handleDeletePitch(pitch.id);
+        }}
+        className="opacity-100 lg:opacity-0 lg:group-hover:opacity-100 text-red-400 hover:text-red-300 active:text-red-200 transition-opacity touch-manipulation p-2 -m-2"
+      >
+        <Trash2 className="w-4 h-4" />
+      </button>
+    </div>
+  </div>
+))}
             </div>
           )}
         </div>
@@ -1022,28 +1378,29 @@ export default function LandingPage() {
             </div>
           </div>
           <button
-            onClick={handleLogout}
-            className="w-full bg-red-500/10 border border-red-500/30 text-red-400 py-2 rounded-lg hover:bg-red-500/20 transition-all flex items-center justify-center gap-2 text-sm"
-          >
-            <LogOut className="w-4 h-4" />
-            Logout
-          </button>
+  onClick={handleLogout}
+  className="w-full bg-red-500/10 border border-red-500/30 text-red-400 py-2 rounded-lg hover:bg-red-500/20 active:bg-red-500/30 transition-all flex items-center justify-center gap-2 text-sm touch-manipulation"
+>
+  <LogOut className="w-4 h-4" />
+  Logout
+</button>
         </div>
       </div>
 
       {/* ============== MAIN CONTENT ============== */}
-      <div className="flex-1 flex flex-col h-screen">
+      <div className="flex-1 flex flex-col h-screen w-full lg:w-auto">
         {/* Top Bar */}
         <div className="bg-slate-900/80 backdrop-blur-xl border-b border-slate-800 p-4 flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-3">
+            
             {!sidebarOpen && (
-              <button
-                onClick={() => setSidebarOpen(true)}
-                className="text-slate-400 hover:text-white"
-              >
-                <Menu className="w-6 h-6" />
-              </button>
-            )}
+  <button
+    onClick={() => setSidebarOpen(true)}
+    className="text-slate-400 hover:text-white active:text-cyan-400 transition-colors p-2 -m-2 touch-manipulation"
+  >
+    <Menu className="w-6 h-6" />
+  </button>
+)}
             <h1 className="text-white text-xl font-semibold flex items-center gap-2">
               <Sparkles className="w-5 h-5 text-cyan-400" />
               AI Startup Pitch Generator
@@ -1578,32 +1935,112 @@ Generating your pitch...
               </div>
             )}
 
-            {/* Logo Concept */}
-            {responseData.logoIdea && (
-              <div className="bg-slate-800/50 border border-slate-700 rounded-2xl p-6 hover:border-cyan-500/50 transition-all">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex items-start gap-3 flex-1">
-                    <Target className="w-6 h-6 text-orange-400 flex-shrink-0 mt-1" />
-                    <div>
-                      <p className="text-slate-400 text-sm mb-2">Logo Concept</p>
-                      <p className="text-slate-300 leading-relaxed">
-                        {responseData.logoIdea}
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => handleCopy(responseData.logoIdea, "logo")}
-                    className="text-slate-400 hover:text-cyan-400 transition-colors p-2 hover:bg-slate-700/50 rounded-lg"
-                  >
-                    {copiedSection === "logo" ? (
-                      <Check className="w-5 h-5 text-green-400" />
-                    ) : (
-                      <Copy className="w-5 h-5" />
-                    )}
-                  </button>
-                </div>
-              </div>
-            )}
+  {/* Logo Concept & Generator */}
+{responseData.logoIdea && (
+  <div className="bg-slate-800/50 border border-slate-700 rounded-2xl p-6 hover:border-cyan-500/50 transition-all">
+    <div className="flex items-start justify-between gap-4 mb-4">
+      <div className="flex items-start gap-3 flex-1">
+        <Target className="w-6 h-6 text-orange-400 flex-shrink-0 mt-1" />
+        <div className="flex-1">
+          <p className="text-slate-400 text-sm mb-2">Logo Concept</p>
+          <p className="text-slate-300 leading-relaxed mb-4">
+            {responseData.logoIdea}
+          </p>
+          
+          {/* Generate Logo Button */}
+          {!generatedLogoUrl && (
+            <button
+              onClick={generateLogo}
+              disabled={logoGenerating}
+              className="px-4 py-2 bg-gradient-to-r from-orange-500 to-pink-500 text-white rounded-lg hover:shadow-lg hover:shadow-orange-500/30 transition-all flex items-center gap-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:shadow-none"
+            >
+              {logoGenerating ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                  Generating Logo...
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4" />
+                  Generate AI Logo
+                </>
+              )}
+            </button>
+          )}
+        </div>
+      </div>
+      <button
+        onClick={() => handleCopy(responseData.logoIdea, "logo")}
+        disabled={logoGenerating}
+        className="text-slate-400 hover:text-cyan-400 transition-colors p-2 hover:bg-slate-700/50 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        {copiedSection === "logo" ? (
+          <Check className="w-5 h-5 text-green-400" />
+        ) : (
+          <Copy className="w-5 h-5" />
+        )}
+      </button>
+    </div>
+
+    
+
+    {/* Generated Logo Display */}
+{generatedLogoUrl && (
+  <div className="mt-6 p-4 bg-slate-900/50 rounded-lg border border-slate-700 animate-fade-in">
+    <div className="flex items-center justify-between mb-3">
+      <span className="text-slate-400 text-sm font-medium flex items-center gap-2">
+        <Check className="w-4 h-4 text-green-400" />
+        Generated Logo
+      </span>
+      <button
+        onClick={handleDownloadLogo}
+        disabled={logoGenerating}
+        className="text-slate-400 hover:text-green-400 transition-colors p-2 hover:bg-slate-700/50 rounded-lg flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed touch-manipulation"
+      >
+        <Download className="w-4 h-4" />
+        <span className="text-sm">Download</span>
+      </button>
+    </div>
+    
+    {/* Logo Image with Loading Overlay */}
+    <div className="flex justify-center bg-white/5 rounded-lg p-6 relative">
+      <img
+        src={generatedLogoUrl}
+        alt="Generated Logo"
+        className={`max-w-xs w-full h-auto rounded-lg shadow-xl transition-opacity ${logoGenerating ? 'opacity-30' : 'opacity-100'}`}
+      />
+      {logoGenerating && (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="bg-slate-900/80 backdrop-blur-sm rounded-lg p-6 flex flex-col items-center gap-3">
+            <div className="w-12 h-12 border-4 border-slate-700 border-t-orange-500 rounded-full animate-spin"></div>
+            <p className="text-slate-300 text-sm font-medium">Regenerating...</p>
+          </div>
+        </div>
+      )}
+    </div>
+    
+    {/* Regenerate Button */}
+    <button
+      onClick={generateLogo}
+      disabled={logoGenerating}
+      className="mt-4 w-full px-4 py-2 bg-slate-700/50 border border-slate-600 text-slate-300 rounded-lg hover:bg-slate-700 active:scale-95 transition-all flex items-center justify-center gap-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-slate-700/50 touch-manipulation"
+    >
+      {logoGenerating ? (
+        <>
+          <div className="w-4 h-4 border-2 border-slate-300/30 border-t-slate-300 rounded-full animate-spin"></div>
+          Regenerating...
+        </>
+      ) : (
+        <>
+          <RefreshCw className="w-4 h-4" />
+          Regenerate Logo
+        </>
+      )}
+    </button>
+  </div>
+)}
+  </div>
+)}
           </div>
         )}
 
@@ -1665,12 +2102,12 @@ Generating your pitch...
   </div>
 
   {/* Mobile Sidebar Overlay */}
-  {sidebarOpen && (
-    <div
-      className="lg:hidden fixed inset-0 bg-black/50 z-40"
-      onClick={() => setSidebarOpen(false)}
-    />
-  )}
+{sidebarOpen && (
+  <div
+    className="lg:hidden fixed inset-0 bg-black/50 z-40 backdrop-blur-sm"
+    onClick={() => setSidebarOpen(false)}
+  />
+)}
 
   {/* Custom Animations */}
   <style>{`

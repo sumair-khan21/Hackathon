@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { Link, useNavigate } from "react-router-dom";
 import { Mail, Lock, ArrowRight, Rocket, Sparkles, KeyRound } from 'lucide-react';
@@ -13,6 +13,7 @@ const Login = () => {
   const handleLogin = async (e) => {
     e.preventDefault();
     setLoading(true);
+    
     setError("");
     const { data, error } = await supabase.auth.signInWithPassword({
       email,
@@ -26,6 +27,18 @@ const Login = () => {
       navigate("/dashboard");
     }
   };
+
+  // Check for existing session on mount
+useEffect(() => {
+  const checkSession = async () => {
+    const { data: { session } } = await supabase.auth.getSession()
+    if (session) {
+      localStorage.setItem("user", JSON.stringify(session.user))
+      navigate("/dashboard")
+    }
+  }
+  checkSession()
+}, [navigate])
 
   return (
     <div className="min-h-screen w-full bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 flex items-center justify-center p-4 relative overflow-hidden">

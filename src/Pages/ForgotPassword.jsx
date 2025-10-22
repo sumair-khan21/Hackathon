@@ -16,8 +16,10 @@ const ForgotPassword = () => {
     setError('')
     setSuccess(false)
 
-    // redirectTo should match Redirect URLs in Supabase dashboard
-    const redirectTo = `${window.location.origin}/update-password`
+      // Use production URL for Supabase redirects
+    const redirectTo = import.meta.env.PROD 
+  ? 'https://hackathon-lilac-six.vercel.app/update-password'
+  : `${window.location.origin}/update-password`
 
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
       redirectTo,

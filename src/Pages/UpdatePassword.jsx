@@ -9,29 +9,61 @@ const UpdatePassword = () => {
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [loading, setLoading] = useState(false)
+  const [verifying, setVerifying] = useState(true)
   const [userReady, setUserReady] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
 
   useEffect(() => {
-    // check if a session/user exists after redirect
-    const checkUser = async () => {
-      const { data } = await supabase.auth.getUser()
-      if (data?.user) {
-        setUserReady(true)
-      } else {
-        // listen for auth events (PASSWORD_RECOVERY or SIGNED_IN)
-        const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
-          if (event === 'PASSWORD_RECOVERY' || event === 'SIGNED_IN') {
-            setUserReady(true)
-          }
-        })
-        // cleanup
-        return () => sub?.subscription?.unsubscribe?.()
+    const checkSession = async () => {
+      try {
+        // Check for existing session
+        const { data: { session }, error } = await supabase.auth.getSession()
+        
+        if (error) {
+          console.error('Session error:', error)
+          toast.error('Invalid or expired recovery link')
+          setTimeout(() => navigate('/forgot-password'), 2000)
+          return
+        }
+
+        if (session) {
+          setUserReady(true)
+          setVerifying(false)
+        } else {
+          // Listen for auth state changes
+          const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+            console.log('Auth event:', event)
+            
+            if (event === 'PASSWORD_RECOVERY' && session) {
+              setUserReady(true)
+              setVerifying(false)
+            } else if (event === 'SIGNED_IN' && session) {
+              setUserReady(true)
+              setVerifying(false)
+            }
+          })
+
+          // Timeout fallback
+          setTimeout(() => {
+            if (!userReady) {
+              setVerifying(false)
+              toast.error('Recovery session expired. Please request a new link.')
+              setTimeout(() => navigate('/forgot-password'), 2000)
+            }
+          }, 5000)
+
+          return () => subscription.unsubscribe()
+        }
+      } catch (err) {
+        console.error('Verification error:', err)
+        toast.error('Something went wrong')
+        setVerifying(false)
       }
     }
-    checkUser()
-  }, [])
+
+    checkSession()
+  }, [navigate, userReady])
 
   const handleUpdate = async (e) => {
     e.preventDefault()
@@ -48,18 +80,27 @@ const UpdatePassword = () => {
 
     setLoading(true)
 
-    // updateUser requires an authenticated session; password recovery link provides it
-    const { data, error } = await supabase.auth.updateUser({ password: newPassword })
-    setLoading(false)
+    try {
+      const { data, error } = await supabase.auth.updateUser({ 
+        password: newPassword 
+      })
 
-    if (error) {
-      toast.error(error.message || 'Could not update password.')
-      console.error('updateUser error:', error)
-    } else {
-      toast.success('Password updated! Please login with your new password.')
-      // optional: sign out to clear recovery session
+      if (error) throw error
+
+      toast.success('Password updated successfully!')
+      
+      // Sign out to clear recovery session
       await supabase.auth.signOut()
-      navigate('/')
+      
+      setTimeout(() => {
+        navigate('/')
+      }, 1500)
+
+    } catch (error) {
+      console.error('Update error:', error)
+      toast.error(error.message || 'Could not update password.')
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -82,7 +123,7 @@ const UpdatePassword = () => {
             PitchCraft
             <Sparkles className="w-5 h-5 text-cyan-400" />
           </h1>
-          <p className="text-slate-400 text-sm">Your AI Startup Partner </p>
+          <p className="text-slate-400 text-sm">Your AI Startup Partner</p>
         </div>
 
         {/* Main Card */}
@@ -99,12 +140,28 @@ const UpdatePassword = () => {
             </p>
           </div>
 
-          {!userReady ? (
+          {verifying ? (
             <div className="text-center py-8">
               <div className="inline-flex items-center justify-center mb-4">
                 <div className="w-8 h-8 border-2 border-cyan-500/30 border-t-cyan-500 rounded-full animate-spin"></div>
               </div>
-              <p className="text-slate-400 text-sm">Verifying recovery session...</p>
+              <p className="text-slate-400 text-sm">Verifying recovery link...</p>
+            </div>
+          ) : !userReady ? (
+            <div className="text-center py-8">
+              <div className="inline-flex items-center justify-center w-16 h-16 bg-red-500/10 rounded-full mb-4">
+                <ShieldCheck className="w-8 h-8 text-red-400" />
+              </div>
+              <h3 className="text-lg font-semibold text-white mb-2">Link Expired</h3>
+              <p className="text-slate-400 text-sm mb-4">
+                This recovery link has expired or is invalid.
+              </p>
+              <button
+                onClick={() => navigate('/forgot-password')}
+                className="text-cyan-400 hover:text-cyan-300 font-medium text-sm"
+              >
+                Request New Link →
+              </button>
             </div>
           ) : (
             <form onSubmit={handleUpdate} className="space-y-4">
