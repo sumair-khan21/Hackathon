@@ -28,7 +28,6 @@ const Login = () => {
     }
   };
 
-  // Check for existing session on mount
 useEffect(() => {
   const checkSession = async () => {
     const { data: { session } } = await supabase.auth.getSession()
